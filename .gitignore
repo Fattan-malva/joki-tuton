@@ -1,0 +1,85 @@
+# ---------------------------------------------------------------- rahasia
+# .env memuat cookie sesi Moodle yang SEDANG BERJALAN. Siapa pun yang punya
+# salinannya bisa membuka akun tersebut selama cookie belum kedaluwarsa, jadi
+# berkas ini tidak boleh masuk riwayat Git. Begitu sudah di-commit sekali,
+# tokennya tersimpan permanen di riwayat dan harus dianggap bocor.
+.env
+.env.*
+!.env.example
+
+# ------------------------------------------------------------- hasil kerja
+# _kerja/ adalah ruang kerja per sesi: peta soal, transkrip gambar, PDF bahan
+# ajar yang diunduh dari Moodle, montase halaman, log agent, dan draf jawaban.
+# Semuanya bisa dibuat ulang dengan `py main.py`, dan isinya materi ajar milik
+# Universitas Terbuka yang tidak tepat disalin ke repo publik.
+_kerja/
+
+# output/ berisi berkas .docx jawaban milik pengguna. Portofolio pribadi, bukan
+# bagian dari program.
+output/
+
+# cache/ menyimpan salinan HTML halaman Moodle. Bisa berukuran ratusan MB
+# setelah beberapa sesi dan isinya sepenuhnya duplikat.
+cache/
+
+# ------------------------------------------------------------------ Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Bytes hasil kompilasi
+*.so
+
+# Lingkungan virtual
+.venv/
+venv/
+env/
+ENV/
+
+# Isolasi paket
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Alat bantu
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --------------------------------------------------------- alat suntingan
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Berkas terakhir dibuka / dikunci oleh Word. `~$` dipakai Word untuk lock file
+# dan `*.sedang-dibuat` dipakai `tools/docx.py` saat menyimpan dokumen.
+~$*
+*.sedang-dibuat
+*.tmp
+
+# ------------------------------------------------------------------- Node
+# opencode dipasang lewat npm; `.opencode/node_modules` bisa berukuran besar
+# dan isinya bukan milik proyek ini.
+node_modules/
+
+# ------------------------------------------------------------------- OS
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Catatan: `template/ContohFormatJawaban.docx` SENGAJA ikut dilacak. Format
+# dokumen adalah sumber kebenaran proyek ini dan `tools/docx.py` memuat
+# berkasnya sebagai dokumen dasar. Kalau template itu hilang, semua style,
+# penomoran, dan ukuran heading ikut hilang. Jangan tambahkan `*.docx` ke
+# daftar ini.
