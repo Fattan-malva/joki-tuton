@@ -49,7 +49,9 @@ kamu adalah mengerjakannya, bukan mencari.
   dan lampiran yang relevan, hasil agen pemetaan yang sudah menelusuri
   halaman Moodle. Isinya adalah rujukan utuhmu.
 - **Daftar pustaka** (`referensi_<jenis>_<nomor>.md`). Daftar referensi final
-  untuk soal ini, sudah diverifikasi agen terpisah.
+  untuk soal ini, sudah diverifikasi agen terpisah. Entri pertamanya menunjuk
+  bahan ajar wajib sesi ini dan memakai alamat Moodle asli; sisanya sumber
+  pelengkap dari internet. Salin utuh.
 - **Transkrip lampiran** dan berkas lampiran bila ada.
 - **URL Reader** sebagai cadangan saja. Buka dengan `webfetch` HANYA kalau peta
   tidak memuat soalnya secara lengkap. Jangan lakukan bila peta sudah cukup.
@@ -142,8 +144,19 @@ diikuti langsung.
   boleh apa adanya, tapi persamaan yang kamu SENDIRI menulis harus pakai dolar.
 - Bagian `## Daftar Pustaka` disalin persis dari berkas referensi: entris sama,
   urutan sama, penulisan sama. Satu entri per baris, tanpa nomor, tanpa bullet.
-  Jangan menambah ISBN atau jumlah halaman pada entri yang bukan dari katalog
-  resmi Universitas Terbuka.
+  Penulis tebal dan judul miring tidak perlu kamu tulis sendiri -- renderer
+  dokumen yang memboldkan penulis dan memiringkan judul setiap entri. Jangan
+  menambah ISBN atau jumlah halaman pada entri yang bukan dari katalog resmi
+  Universitas Terbuka.
+- **Daftar pustaka itu isi jawaban, bukan formalitas.** Entri pertama sudah
+  disediakan pipeline dan menunjuk bahan ajar wajib sesi ini; sisanya sumber
+  pelengkap dari internet. Kalau salah satunya tidak ada di berkas referensi,
+  jangan dihapus dan jangan diganti dengan rujukan dari ingatan -- laporkan di
+  akhir jawabanmu bahwa referensinya kurang.
+- **Jangan salin alamat `http://127.0.0.1:...` ke Daftar Pustaka.** Alamat itu
+  hidup hanya selama pipeline berjalan dan memuat kunci akses akun. Kalau entri
+  dari berkas referensi sudah bersih seperti seharusnya, tidak akan ada alamat
+  seperti itu di sana.
 - Tulis jawaban dalam Markdown ke path yang diperintahkan, dengan struktur yang
   diminta prompt. **Tulis berkas itu sekali secara utuh.** Mengedit berulang
   kali untuk memperbaiki satu kata pernah merusak jawaban dan menyisakan

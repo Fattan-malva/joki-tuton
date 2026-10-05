@@ -13,15 +13,95 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-# Placeholder "tidak ada referensi yang terverifikasi" (lihat main.py). Bukan
-# entri daftar pustaka, jadi docx merendernya berbeda dari butir bersitasi.
+# Placeholder "referensi tidak terverifikasi" (lihat main.py). Bukan entri
+# daftar pustaka, jadi docx merendernya berbeda dari butir bersitasi.
+#
+# Polanya sengaja longgar. Yang muncul di jawaban bukan hanya kalimat versi
+# agent ("tidak ada referensi yang terverifikasi") tapi juga kalimat karangan
+# penulis sendiri seperti "Tidak ada referensi tambahan yang diperlukan."
+# Keduanya bukan rujukan dan tidak boleh dicetak seperti entri APA sungguhan.
 _NO_REFERENSI_RE = re.compile(
-    r"tidak\s+ada\s+referensi\s+yang\s+terverifikasi", re.IGNORECASE
+    r"tidak\s+ada\s+(?:referensi|sumber)\b|"
+    r"tidak\s+perlu\s+rujukan|tidak\s+ada\s+rujukan|"
+    r"tidak\s+diperlukan\s+rujukan",
+    re.IGNORECASE,
 )
 
 # Hanging indent APA 7, dalam twentieths of a point (unit yang dipakai OOXML).
 # 720 = 720/1440 inci = 0,5 inci, persis angka yang diminta APA 7.
 _APA_HANGING_TWIP = 720
+
+# Tahun (atau `n.d.`) di dalam kurung: kunci pemecah entri referensi menjadi
+# penulis, tahun, dan judul.
+_TAHUN_RE = re.compile(r"\((?:n\.d\.|\d{4}[a-z]?)\)")
+
+# Batas bagian yang dicetak miring pada ekor entri jurnal. Di APA 7 yang
+# miring adalah nama majalah beserta nomornya; nomor issue, halaman, dan
+# penerbit tetap tegak.
+#
+# Pola sebelumnya hanya "`koma + angka`", dan itu kelewat longgar: rentang
+# halaman di conference proceedings (`, 55-59`) ikut cocok sehingga seluruh
+# ekor entri -- termasuk tautan DOI -- ikut miring. Aturannya sekarang
+# dipersempit: koma itu harus dekat dengan nomor issue (`(1)`), kata
+# `Article`, atau kata kunci volume eksplisit.
+_BATAS_VOLUME_RE = re.compile(
+    r",\s*\d+(?=\s*\(|\s*(?:Article|art\.?|hlm|p|pp)\b|\s*[.,;]|\s*$)"
+    r"|,\s*(?:Article|art\.?)\s*\d+"
+    r"|\bvol\.?\s*\d+",
+    re.IGNORECASE,
+)
+
+# Entri prosiding dimulai dengan "In ...". Yang miring di sana adalah judul
+# prosidingnya, jadi batasnya dicari dari hlm./pp./halaman, bukan dari volume.
+_AWAL_IN_RE = re.compile(r"^in\s+", re.IGNORECASE)
+_EDITOR_PROSIDING_RE = re.compile(
+    r"^[^,]{0,80}?\((?:Ed|Edt|Eds)\.?\)\s*,?\s*", re.IGNORECASE
+)
+_BATAS_PROSIDING_RE = re.compile(
+    r",\s*(?:hlm\.?|hal\.?|pp\.?|p\.)\s*\d+"
+    r"|,\s*\d+\s*[-–]\s*\d+\s*\.?\s*$"
+    r"|\s*\.\s+(?=[A-Z])",
+    re.IGNORECASE,
+)
+
+# Tautan DOI/URL di ujung entri. Dilarik keluar lebih dulu supaya tidak
+# pernah ikut miring dan tidak ikut terjerat di dalam `ekor`.
+_TAUTAN_RE = re.compile(r"https?://\S+|\bdoi\s*[:：]?\s*10\.\S+", re.IGNORECASE)
+# "diakses 12 Oktober 2026 dari" menggantung setelah URL-nya dilepas.
+_EKOR_DIAKSES_RE = re.compile(
+    r"\s*[,;.]?\s*(?:di\s*akses|diakses|accessed|retrieved)\b[^,]{0,48}?\bdari\s*$",
+    re.IGNORECASE,
+)
+
+# Singkatan yang titik akhirnya bukan akhir kalimat. Tanpa daftar ini
+# `... (Ed.), Seminar ..., hlm. 55` terpotong tepat di "hlm." dan judul
+# prosiding ikut miring.
+_BUKAN_AKHIR_KALIMAT_RE = re.compile(
+    r"(?:^|[\s(\[])[A-Z]\.$"  # inisial orang: "J. R. R."
+    r"|\b(?:e\.g|i\.e|dkk|dsb|a\.n\.s|h\.a|hlm|hal|pp|ed|eds|vol|nos|no|jil"
+    r"|cet|thn|Prof|Drs|Dr|Ir|St|Mrs|Mr)\.\s*$",
+    re.IGNORECASE,
+)
+
+# Alamat Reader lokal. Agent research sering menuliskan URL `/berkas?u=...&k=...`
+# sebagai "tautan" rujukan, dan `k=` itu kunci akses yang masih hidup selama
+# pipeline berjalan.
+#
+# Nama punya akhiran `_ENTRI` karena `_URL_READER_RE` di bawah dipakai untuk
+# teks soal dan polannya lebih longgar (dia mau memakai seluruh `\S*`).
+_URL_READER_ENTRI_RE = re.compile(
+    r"https?://(?:127\.0\.0\.1|localhost)(?::\d+)?[^\s,;)\]]*"
+)
+_MARKAH_TAUTAN_RE = re.compile(r"!?\[[^\]\n]*\]\([^)\n]*\)")
+_TOKEN_READER_RE = re.compile(r"[?&]k=[A-Za-z0-9_\-]+")
+
+# Baris penutup yang diminta tiap spec agent, dan sisa laporan yang tidak
+# pernah boleh masuk daftar pustaka.
+_BARIS_BUKAN_ENTRI_RE = re.compile(
+    r"^\s*(?:SELESAI|DRAFT|BEFORE|AFTER)\s*$|"
+    r"^\s*[-*]?\s*(?:Draft|Before|After|Remaining patterns)\s*[:\-]?\s*$",
+    re.IGNORECASE,
+)
 
 # Ukuran judul "Daftar Pustaka". Di template penanda ini bukan heading, tapi
 # `Normal` bold TNR 14. Dicocokkan di sini supaya bagian yang paling dilihat
@@ -96,6 +176,246 @@ def _omml_matrix(cell_rows: list[list[str]]) -> str:
         '<m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val="]"/></m:dPr>'
         f"<m:e>{matrix}</m:e></m:d>"
     )
+
+
+# ---------------------------------------------------------------- environment
+#
+# LaTeX environment yang jadi kisi `m:m`, bukan teks.
+#
+# Versi lama hanya mengenali nama environment yang berakhiran "matrix"
+# (`matrix`, `pmatrix`, `bmatrix`, `vmatrix`). Sisanya jatuh ke cabang
+# `nodes.append(_omml_run(content))`, yaitu isinya ditempel apa adanya sebagai
+# TEKS. Gejalanya persis yang dikeluhkan tutor: di dalam kotak equation Word
+# muncul tulisan `\begin{cases} 2x + y - z = 3 \\ -x + 3y + 2z = 7`, termasuk
+# `&`, `\\`, dan `\begin{array}{ccc|c}`. Yang paling sering muncul di soal
+# Aljabar Linear Elementer justru yang tidak dikenali: `cases` (sistem
+# persamaan linear) dan `array` (matriks augmentasi).
+_ENV_KISI = frozenset({
+    "matrix", "smallmatrix", "subarray", "array",
+    "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix",
+    "cases", "dcases",
+})
+
+# Environment yang jadi baris rata (`m:eqArr`): `aligned`, `align`, `split`, dan
+# `gather`. Bedanya dengan kisi: `&` di sini adalah titik rata-rata, bukan
+# pemisah kolom.
+_ENV_RATA = frozenset({
+    "aligned", "align", "alignedat", "split",
+    "gather", "gathered", "eqnarray",
+})
+
+# Penghapus environment -> (pembuka, penutup). `None` berarti tanpa penghapus;
+# string kosong berarti disembunyikan (`cases` hanya punya `{` di kiri).
+_DELIM_ENV = {
+    "pmatrix": ("(", ")"),
+    "bmatrix": ("[", "]"),
+    "Bmatrix": ("{", "}"),
+    "vmatrix": ("|", "|"),
+    "Vmatrix": ("‖", "‖"),
+    "cases": ("{", ""),
+    "dcases": ("{", ""),
+}
+
+# Posisi kolom dari spec `\begin{array}{ccc|c}`.
+_JC_KOLOM = {"l": "left", "c": "center", "r": "right"}
+
+# Pasangan penghapus yang boleh dipakai `\left ... \right` untuk membungkus
+# `matrix`/`array` yang tidak punya penghapus sendiri.
+_PASANGAN_PENUTUP = {"[": "]", "(": ")", "{": "}", "|": "|"}
+
+# Argumen opsional setelah pemisah baris: `\\[4pt]`, `\\[1.5ex]`, `\\[2mm]`.
+# Tanpa pola ini, `[4pt]` ikut jadi isi sel dan muncul di dokumen.
+_SPASI_OPT_RE = re.compile(
+    r"^\s*\[\s*\d{0,3}(?:\.\d+)?\s*(?:pt|em|ex|mu|mm|cm|in|px|dd)?\s*\]"
+)
+
+
+def _bungkus_delim(dalam: str, pembuka: str | None, penutup: str | None) -> str:
+    """Bungkus satu simpul OMML dengan penghapus `m:d`."""
+    if not pembuka and not penutup:
+        return dalam
+    b = f'<m:begChr m:val="{pembuka}"/>' if pembuka else '<m:begChr m:val=""/>'
+    e = f'<m:endChr m:val="{penutup}"/>' if penutup else '<m:endChr m:val=""/>'
+    return f"<m:d><m:dPr>{b}{e}<m:ctrlPr/></m:dPr><m:e>{dalam}</m:e></m:d>"
+
+
+def _bangun_matriks(
+    sel_per_baris: list[list[str]], kolom: list[str]
+) -> str:
+    """OMML `m:m` dari sel yang sudah diurai, plus kolom pemisah dari spec.
+
+    `kolom` berasal dari spec `\begin{array}` dan boleh memuat `|`. OMML tidak
+    punya garis pemisah kolom seperti `|` di LaTeX, jadi `|` dijadikan kolom
+    sendiri berisi `│` di tengah. Hasilnya bukan garis mati yang menempel,
+    tapi matriks augmentasi tetap terbaca apa adanya -- dan itu jauh lebih
+    baik daripada menampilkan `\begin{array}{ccc|c}` mentah-mentah.
+    """
+    nkol = max([len(r) for r in sel_per_baris] or [0]) or 1
+
+    if kolom:
+        # Spec boleh menambah kolom (setiap `|` menambah satu kolom pemisah),
+        # jadi baris harus disamakan ke lebar spec, bukan hanya ke lebar
+        # terpanjang dari isi.
+        lebar = max(nkol, len(kolom))
+        sel_bersih: list[list[str]] = []
+        for row in sel_per_baris:
+            row = list(row) + [""] * max(0, lebar - len(row))
+            sel_bersih.append([
+                _omml_run("│") if spec == "|" else row[k]
+                for k, spec in enumerate(kolom)
+            ])
+    else:
+        sel_bersih = [
+            list(row) + [_omml_run("")] * max(0, nkol - len(row))
+            for row in sel_per_baris
+        ]
+
+    body = "".join(
+        "<m:mr>" + "".join(f"<m:e>{sel}</m:e>" for sel in row) + "</m:mr>"
+        for row in sel_bersih
+    )
+
+    mpr = ""
+    if kolom:
+        # Per kolom kunci ini yang menentukan rata-atas/rata-tengah/rata-kiri.
+        mc = "".join(
+            f'<m:mc><m:mcPr><m:count m:val="1"/>'
+            f'<m:mcJc m:val="{_JC_KOLOM.get(spec, "center")}"/>'
+            f"</m:mcPr></m:mc>"
+            for spec in kolom
+        )
+        mpr = f"<m:mPr><m:mcs>{mc}</m:mcs><m:ctrlPr/></m:mPr>"
+    return f"<m:m>{mpr}{body}</m:m>"
+
+
+def _bangun_rata(sel_per_baris: list[list[str]]) -> str:
+    """OMML `m:eqArr` untuk `aligned`/`gather` dan sejenisnya.
+
+    `&` di environment ini adalah titik rata-rata, jadi tiap baris boleh punya
+    lebih dari satu `m:e`; Word menyelaraskan kolom-kolomnya sendiri.
+    """
+    body = "".join(
+        "<m:mr>" + "".join(f"<m:e>{sel}</m:e>" for sel in row) + "</m:mr>"
+        for row in sel_per_baris
+    )
+    return (
+        '<m:eqArr><m:eqArrPr><m:maxDist m:val="0"/>'
+        f"<m:objDist m:val=\"1\"/><m:ctrlPr/></m:eqArrPr>{body}</m:eqArr>"
+    )
+
+
+def _pecah_baris(konten: str) -> list[str]:
+    """Pecah isi environment per `\\`, buang argumen spasi opsional."""
+    return [_SPASI_OPT_RE.sub("", b) for b in re.split(r"\\\\", konten)]
+
+
+def _pecah_sel(baris: str) -> list[str]:
+    """Pecah satu baris per `&` lalu urai tiap sel jadi OMML."""
+    return [
+        "".join(_parse_latex_math(sel)) or _omml_run("")
+        for sel in baris.split("&")
+    ]
+
+
+def _ada_isi(sel: list[str]) -> bool:
+    return any(re.sub(r"<[^>]+>", "", s).strip() for s in sel)
+
+
+def _kolom_dari_spek(spek: str) -> list[str]:
+    """`ccc|c` -> `['c', 'c', 'c', '|', 'c']`.
+
+    `|` disisipkan sebagai kolom tersendiri supaya jadi garis di antara kolom
+    ke-3 dan ke-4 pada matriks augmentasi.
+    """
+    kolom: list[str] = []
+    i, n = 0, len(spek)
+    while i < n:
+        c = spek[i]
+        if c == "@":
+            j = spek.find("}", i)
+            i = (j + 1) if j != -1 else n
+            continue
+        if c in "lcr|":
+            kolom.append(c)
+        i += 1
+    # `|` di spec menandai batas SEBELUM kolom berikutnya, jadi ia harus punya
+    # satu karakter spec di sebelah kanannya.
+    out: list[str] = []
+    for k, c in enumerate(kolom):
+        if c == "|":
+            out.append("|")
+            out.append("c")
+        else:
+            out.append(c)
+    return out
+
+
+def _ambil_spek(konten: str) -> tuple[str, str]:
+    """Ambil argumen wajib `\begin{array}{spec}` dari awal konten."""
+    teks = konten.lstrip()
+    if not teks.startswith("{"):
+        return "", konten
+    depth = 0
+    for i, ch in enumerate(teks):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return teks[1:i], teks[i + 1 :]
+    return "", konten
+
+
+def _render_environment(env: str, konten: str) -> str:
+    r"""OMML untuk satu `\begin{env} ... \end{env}`."""
+    if env in _ENV_RATA:
+        baris = [_pecah_sel(b) for b in _pecah_baris(konten)]
+        baris = [b for b in baris if _ada_isi(b)]
+        return _bangun_rata(baris) if baris else ""
+
+    spek = ""
+    if env in ("array", "subarray"):
+        # Hanya `array`/`subarray` yang mewajibkan spec kolom. `cases` tidak,
+        # dan baris pertamanya boleh saja diawali kurung kurawal.
+        spek, konten = _ambil_spek(konten)
+
+    baris = [_pecah_sel(b) for b in _pecah_baris(konten)]
+    baris = [b for b in baris if _ada_isi(b)]
+    if not baris:
+        return ""
+
+    kisi = _bangun_matriks(baris, _kolom_dari_spek(spek))
+    pembuka, penutup = _DELIM_ENV.get(env, (None, None))
+    return _bungkus_delim(kisi, pembuka, penutup)
+
+
+def _cocok_penghapus(nodes: list[str], simpul: str, s: str, i: int) -> str:
+    r"""Pasangkan `[`/`]` yang sudah tercetak dengan grid di dalamnya.
+
+    `\left[\begin{array}...\end{array}\right]` menghasilkan node `[` lalu grid
+    lalu node `]`. Tanpa langkah ini ketiganya jadi tiga run biasa, sehingga
+    kurung spon tidak ikut meninggi bersama matriksnya. Di sini node `[` diambil
+    kembali, `]` dilewati, dan keduanya diganti penghapus `m:d` yang benar.
+    """
+    if not nodes:
+        return simpul
+    pembuka = re.sub(r"<[^>]+>", "", nodes[-1])
+    if pembuka not in _PASANGAN_PENUTUP:
+        return simpul
+
+    j = i
+    while j < len(s) and s[j] == " ":
+        j += 1
+    # `\right` ada di `_CMD_MAP` dan jadi string kosong, jadi harus dilewati
+    # di sini supaya penutupnya sendiri yang dibaca.
+    if s.startswith("\\right", j):
+        j += len("\\right")
+        while j < len(s) and s[j] == " ":
+            j += 1
+    if j < len(s) and s[j] in _PASANGAN_PENUTUP.values():
+        nodes.pop()
+        return _bungkus_delim(simpul, pembuka, s[j])
+    return simpul
 
 
 def _omml_fraction(num: str, den: str, *, bar: bool = True) -> str:
@@ -214,6 +534,18 @@ def _parse_latex_math(s: str) -> list[str]:
         "lim": "lim", "limsup": "lim sup", "liminf": "lim inf",
         "left": "", "right": "", "newcommand": "", "operatorname": " ",
         "text": " ", "quad": " ", "qquad": "  ", "hline": "",
+        # Perintah yang sering tampil bersama environment `cases`, `aligned`,
+        # dan `array`: pengukur `\left`/`\right` dan pemisah `\vert`.
+        "vert": "|", "Vert": "‖", "lvert": "|", "rvert": "|",
+        "lVert": "‖", "rVert": "‖", "nvert": "∤",
+        "lbrace": "{", "rbrace": "}", "lbrack": "[", "rbrack": "]",
+        "displaystyle": "", "textstyle": "", "scriptstyle": "",
+        "nonumber": "", "notag": "", "label": "",
+        "bmod": " mod ", "pmod": " mod ", "mod": "mod",
+        "because": "∵", "therefore": "∴",
+        "ll": "≪", "gg": "≫",
+        "leqslant": "⩽", "geqslant": "⩾",
+        "coloncolon": "::",
     }
 
     nodes: list[str] = []
@@ -272,7 +604,7 @@ def _parse_latex_math(s: str) -> list[str]:
                 i = j
                 if cmd in _ALPHA_MAP:
                     nodes.append(_omml_run(_ALPHA_MAP[cmd]))
-                elif cmd == "frac":
+                elif cmd in ("frac", "dfrac", "tfrac", "cfrac"):
                     num, i = _read_braced(i)
                     den, i = _read_braced(i)
                     nodes.append(_omml_fraction(num, den))
@@ -335,8 +667,21 @@ def _parse_latex_math(s: str) -> list[str]:
                 elif cmd == "begin":
                     env, i = _read_braced(i)
                     content, i = _read_until_end(s, i, env)
-                    if env.endswith("matrix"):
-                        nodes.append(_parse_latex_matrix(content, env))
+                    # `\begin{align*}` dan `\begin{equation*}` membawa bintang
+                    # pada nama environment-nya.
+                    nama_env = env.strip().rstrip("*")
+                    if nama_env in _ENV_KISI or nama_env in _ENV_RATA:
+                        simpul = _render_environment(nama_env, content)
+                        # `matrix`/`array` tidak punya penghapus sendiri; kalau
+                        # dikurung `\left[ ... \right]`, kurungnya dipindahkan
+                        # jadi penghapus `m:d` yang benar.
+                        if nama_env not in _DELIM_ENV:
+                            simpul = _cocok_penghapus(nodes, simpul, s, i)
+                        if simpul:
+                            nodes.append(simpul)
+                        else:
+                            # Environment kosong: jangan sisakan kotak kosong.
+                            nodes.append(_omml_run(content.strip()))
                     else:
                         nodes.append(_omml_run(content))
                 elif cmd in _CMD_MAP:
@@ -475,24 +820,19 @@ def _parse_latex_math(s: str) -> list[str]:
 
 
 def _read_until_end(s: str, i: int, env: str) -> tuple[str, int]:
-    """Read content until \\end{env}, returning (content, new_index)."""
+    r"""Read content until \\end{env}, returning (content, new_index).
+
+    `\end{array*}` juga diterima untuk environment berversi bintang, karena
+    `\begin{array*}` menulis `\end{array*}`.
+    """
     tag = f"\\end{{{env}}}"
     j = s.find(tag, i)
+    if j == -1 and env.rstrip("*"):
+        tag = f"\\end{{{env.rstrip('*')}*}}"
+        j = s.find(tag, i)
     if j == -1:
         return s[i:], len(s)
     return s[i:j], j + len(tag)
-
-
-def _parse_latex_matrix(content: str, env: str) -> str:
-    """Convert LaTeX matrix content to OMML with bracket delimiters."""
-    rows = re.split(r"\\\\|(?<!\\)\\(?!\\)", content)
-    cell_rows: list[list[str]] = []
-    for row in rows:
-        cells = [c.strip() for c in row.split("&")]
-        cell_rows.append(
-            ["".join(_parse_latex_math(c)) if c else _omml_run("") for c in cells]
-        )
-    return _omml_matrix(cell_rows)
 
 
 def _equation_omml(math_str: str) -> str:
@@ -795,6 +1135,45 @@ def _label_indent_pt(prefix: str, font_pt: float) -> float:
     return 0.5 * font_pt * len(prefix)
 
 
+# Label pembuka baris daftar: "- ", "* ", "+ ", "1. ", "2) ".
+# Berbeda dari `_LABEL_RE`, ini benar-benar menandai item daftar, bukan label
+# paragraf biasa, dan dipakai sebelum pemecahan `$...$`.
+_LABEL_DAFTAR_RE = re.compile(r"^\s*(?:[-*+]\s+|\d{1,2}[.)]\s+)")
+
+
+def _tambah_inline(paragraph, teks: str) -> None:
+    """Isi satu paragraf dengan teks yang berselang-seling `$...$` dan biasa."""
+    for idx, bagian in enumerate(re.split(r"\$([^$]+)\$", teks)):
+        if not bagian:
+            continue
+        if idx % 2:
+            _append_equation(paragraph, bagian)
+        else:
+            _add_runs(paragraph, bagian)
+
+
+def _butir_bernomor(doc: Document, num: str, daftar_num_id: str | None):
+    """Buat paragraf butir bernomor asli Word.
+
+    Return `(paragraf, num_id_baru)` kalau penomoran Word berhasil dipasang,
+    atau `(paragraf, None)` kalau dokumen tanpa definisi penomoran -- pada
+    kasus itu penomorannya diketik sebagai teks biasa supaya butirnya tetap
+    terbaca dan bernomor.
+    """
+    try:
+        p = doc.add_paragraph(style="List Number")
+    except KeyError:
+        p = doc.add_paragraph()
+        p.add_run(f"{num}. ")
+        return p, None
+
+    if daftar_num_id is None:
+        daftar_num_id = _numbering_restart(doc.part.numbering_part.element, int(num))
+    if daftar_num_id:
+        _pasang_nomor(p, daftar_num_id)
+    return p, daftar_num_id
+
+
 def _render_markdown(doc: Document, md: str):
     lines = md.splitlines()
     i = 0
@@ -839,16 +1218,39 @@ def _render_markdown(doc: Document, md: str):
             continue
 
         # Inline math: convert one-line $...$ expressions to Word equations.
+        #
+        # Label daftar TETAP dibaca lebih dulu. Versi lama langsung memecah
+        # baris jadi bagian `$...$` dan teks, sehingga baris seperti
+        # `- **Pivot kedua**: bagi baris kedua dengan $\frac{5}{2}$, lalu ...`
+        # kehilangan tanda `-`-nya dan tercetak sebagai
+        # "- Pivot kedua: ...". Persis itu yang dikeluhkan tutor: bullet ikut
+        # tampil mentah di depan paragraf.
         if line.count("$") >= 2 and "$$" not in line:
-            p = doc.add_paragraph()
-            parts = re.split(r"\$([^$]+)\$", line)
-            for idx, part in enumerate(parts):
-                if not part:
-                    continue
-                if idx % 2:
-                    _append_equation(p, part)
-                else:
-                    _add_runs(p, part)
+            label_m = _LABEL_DAFTAR_RE.match(line)
+            if label_m and label_m.group(0).lstrip()[:1] in "-*+":
+                p = doc.add_paragraph(style="List Bullet")
+                _tambah_inline(p, line[label_m.end():])
+                if pending_label_pt:
+                    p.paragraph_format.left_indent = Cm(0) + Pt(pending_label_pt)
+                ordered_idx = 0
+                daftar_num_id = None
+            elif label_m:
+                num = label_m.group(0).strip().rstrip(".)")
+                p = _butir_bernomor(doc, num, daftar_num_id)
+                if isinstance(p, tuple):
+                    p, daftar_num_id = p
+                _tambah_inline(p, line[label_m.end():])
+                if pending_label_pt:
+                    p.paragraph_format.left_indent = Cm(0) + Pt(pending_label_pt)
+                pending_label_pt = _label_indent_pt(f"{num}. ", body_font_pt)
+                ordered_idx = 1
+            else:
+                p = doc.add_paragraph()
+                _tambah_inline(p, line)
+                if pending_label_pt:
+                    p.paragraph_format.left_indent = Cm(0) + Pt(pending_label_pt)
+                ordered_idx = 0
+                daftar_num_id = None
             i += 1
             continue
 
@@ -999,8 +1401,12 @@ def _render_markdown(doc: Document, md: str):
         # referensi bisa mulai dari angka 4 dan angka yang disebut di dalam
         # teks tidak cocok. Nomor literal yang diketik manual juga dibuang,
         # karena yang diminta tutor adalah Daftar Pustaka gaya APA 7 yang bersih.
+        #
+        # Setiap entri juga dibersihkan dan diformat ulang di sini: penulis
+        # dicetak tebal, judul miring, dan alamat Reader dibuang. Lihat
+        # `_format_entri_referensi`.
         if in_references:
-            teks = re.sub(r"^(?:[-*+]|\[?\d+\]?[.)]?)\s+", "", line).strip()
+            teks = _format_entri_referensi(line)
             if not teks:
                 i += 1
                 continue
@@ -1598,7 +2004,7 @@ def build_docx(
         _tulis_soal(doc, soal_text, gambar_soal=gambar_soal)
 
     # Jawab (dari markdown opencode)
-    body = _drop_identity_echo(_answer_body(jawaban_md))
+    body = _bersihkan_tanda_humanizer(_drop_identity_echo(_answer_body(jawaban_md)))
     if body.strip():
         _render_markdown(doc, body)
 
@@ -1818,6 +2224,215 @@ def _neutralize_metadata(doc: Document, meta: dict) -> None:
         pass
 
 
+def _pisah_kalimat(teks: str) -> tuple[str, str]:
+    """Pisahkan `(judul). (ekor)` pada titik pertama yang bukan inisial.
+
+    Titik setelah singkatan (`hlm.`, `pp.`, `Ed.`) bukan akhir kalimat. Kalau
+    tidak dibedakan, judul prosiding ikut terpotong dan sisa berikutnya
+    salah dianggap sebagai nama majalah.
+    """
+    for m in re.finditer(r"\.\s+", teks):
+        sebelum = teks[: m.start() + 1]
+        # Inisial seperti "J. R. R." dan singkatan seperti "hlm." tidak boleh
+        # dipotong sebagai akhir kalimat.
+        if _BUKAN_AKHIR_KALIMAT_RE.search(sebelum):
+            continue
+        return sebelum, teks[m.end():]
+    return teks, ""
+
+
+def _bagian_miring(ekor: str) -> tuple[int, str]:
+    """Bagian `ekor` yang menurut APA 7 harus dicetak miring.
+
+    Dikembalikan sebagai `(posisi, teks)` karena posisinya tidak selalu nol:
+    pada entri prosiding, yang miring adalah judul prosiding, sementara
+    `In R. Hidayat (Ed.),` di depannya tetap tegak. Kalau pemanggil hanya
+    memotong berdasarkan panjang teks, Separuh ekor akan terpotong di tempat
+    yang salah.
+
+    Dua bentuk yang muncul di Daftar Pustaka tutorial:
+
+    * artikel jurnal -- miring dari posisi 0 sampai nama majalah dan
+      nomornya, lalu `(1), 45-59` tetap tegak;
+    * prosiding -- `In A. W. Saputra (Ed.), Seminar ..., hlm. 55-59`, yang
+      miring hanya judul prosidingnya, bukan nama editornya.
+
+    Kalau tidak ada pola yang cocok, dikembalikan `(0, "")` supaya ekor tetap
+    tegak. Jangan menebaknya: memiringkan satu ekor entri yang salah lebih
+    buruk daripada membiarkannya tegak.
+    """
+    if not ekor:
+        return 0, ""
+
+    m_in = _AWAL_IN_RE.match(ekor)
+    if m_in:
+        # posisi dihitung terhadap `ekor` utuh, bukan terhadap potongan yang
+        # sudah digeser -- kalau tidak, potongannya menunjuk teks yang salah.
+        posisi = m_in.end()
+        sisa = ekor[posisi:]
+        m_ed = _EDITOR_PROSIDING_RE.match(sisa)
+        if m_ed:
+            posisi += m_ed.end()
+            sisa = sisa[m_ed.end():]
+        m_batas = _BATAS_PROSIDING_RE.search(sisa)
+        if not m_batas:
+            return 0, ""
+        return posisi, sisa[: m_batas.start()].rstrip(" ,;:")
+
+    m_vol = _BATAS_VOLUME_RE.search(ekor)
+    if not m_vol:
+        return 0, ""
+    return 0, ekor[: m_vol.end()].rstrip(" ,;:")
+
+
+def _format_entri_referensi(baris: str) -> str:
+    """Rapikan satu baris Daftar Pustaka menjadi markah APA yang diminta.
+
+    Empat hal dikerjakan di sini, dan keempatnya gagal diam-diam kalau
+    dilewati:
+
+    1. **Penulis tebal, judul miring.** Tutor meminta format itu eksplisit.
+       Dulu format itu diserahkan sepenuhnya ke agen: kalau agen lupa menulis
+       `*Judul*`, dokumen keluar tanpa miring sama sekali dan tidak ada yang
+       memperbaikinya. Di sini miring pada badan entri dibuang lebih dulu,
+       lalu ditambahkan kembali dari struktur baris: `**penulis**`,
+       `*judul*`, dan untuk artikel jurnal nama majalahnya juga miring.
+    2. **Alamat Reader dibuang.** Referensi bahan ajar sering diisi URL
+       `http://127.0.0.1:PORT/berkas?u=...&k=<token>`. URL itu mati begitu
+       Reader berhenti, dan `k=`-nya adalah kunci akses akun yang masih hidup.
+       Mencetaknya di dokumen sama saja menempelkan kunci itu ke berkas yang
+       diserahkan ke tutor.
+    3. **Baris bukan entri dibuang.** `SELESAI`, `TIDAK ADA REFERENSI YANG
+       TERVERIFIKASI`, dan kalimat karangan seperti "Tidak ada referensi
+       tambahan yang diperlukan." bukan rujukan.
+    4. **Nomor dan bullet dibuang.** Penanda urutannya adalah alfabetis.
+
+    Tautan DOI/URL ditarik keluar lebih dulu, sebelum miring dihitung.
+    Kalau tidak, tautan ikut masuk ke bagian miring, dan DOI yang ikut
+    tercetak miring adalah kegagalan yang paling kelihatan di seluruh
+    Daftar Pustaka.
+
+    Return string ber-markah, atau `""` kalau barisnya memang bukan entri.
+    """
+    teks = (baris or "").strip()
+    if not teks or _BARIS_BUKAN_ENTRI_RE.match(teks) or _NO_REFERENSI_RE.search(teks):
+        return ""
+
+    teks = re.sub(r"^(?:[-*+]|\[?\d+\]?[.)]?)\s+", "", teks).strip()
+
+    # Alamat Reader beserta kunci aksesnya, lalu markdown tautan yang
+    # membungkusnya. Urutan itu penting: kuncinya dibuang lebih dulu supaya
+    # sisa URL tidak menyisakan `?&` yang menggantung di akhir entri.
+    teks = _TOKEN_READER_RE.sub("", teks)
+    teks = _URL_READER_ENTRI_RE.sub("", teks)
+    teks = _MARKAH_TAUTAN_RE.sub("", teks)
+
+    # Tautan asli dipisah dari badan entri. Tinggalkan di ujung, tidak pernah
+    # ikut miring.
+    tautan = ""
+    m_tautan = None
+    for m in _TAUTAN_RE.finditer(teks):
+        m_tautan = m
+    if m_tautan:
+        tautan = m_tautan.group(0).rstrip(".,;)")
+        teks = (teks[: m_tautan.start()] + " " + teks[m_tautan.end():])
+    teks = _EKOR_DIAKSES_RE.sub("", teks)
+
+    teks = re.sub(r"\s+([.,;])", r"\1", teks)
+    teks = re.sub(r"\s{2,}", " ", teks).strip(" ;,")
+    if not teks:
+        return tautan
+
+    # Markah lama dibuang supaya tidak jadi dobel: agen boleh sudah menulis
+    # `**Rosen, K. H.**` atau `*Discrete Mathematics*`.
+    teks = _BOLD_RE.sub(r"\1", teks)
+    teks = _ITALIC_RE.sub(r"\1", teks)
+
+    m_tahun = _TAHUN_RE.search(teks)
+    if not m_tahun:
+        # Tanpa tahun tidak ada cara memisahkan penulis dari judul. Entri
+        # seperti ini tetap dicetak apa adanya daripada ditebak-tebak.
+        return _sambung_tautan(teks, tautan)
+
+    penulis = teks[: m_tahun.start()].strip().rstrip(",").strip()
+    tahun = m_tahun.group(0)
+    sisa = teks[m_tahun.end():]
+    if sisa.startswith("."):
+        sisa = sisa[1:]
+    sisa = sisa.lstrip()
+
+    if not penulis:
+        return _sambung_tautan(teks, tautan)
+
+    judul, ekor = _pisah_kalimat(sisa)
+    judul, ekor = judul.strip(), ekor.strip()
+
+    hasil = f"**{penulis}** {tahun}."
+    if judul:
+        hasil += f" *{judul}*"
+    if ekor:
+        # Pada artikel jurnal, nama majalah beserta nomornya juga miring.
+        # `_bagian_miring` yang memutuskan; kalau tidak ada pola yang cocok,
+        # ekornya dibiarkan tegak daripada nebak.
+        posisi, miring = _bagian_miring(ekor)
+        if miring:
+            if posisi:
+                hasil += " " + ekor[:posisi].rstrip()
+            hasil += f" *{miring}*"
+            sisa_ekor = ekor[posisi + len(miring):].strip()
+            if sisa_ekor:
+                # Ekor yang dimulai dengan tanda baca menyambung langsung,
+                # supaya tidak lahir "`*Judul* . Jakarta`".
+                hasil += (
+                    sisa_ekor if sisa_ekor[0] in ".,;:"
+                    else f" {sisa_ekor}"
+                )
+        else:
+            hasil += f" {ekor}"
+    return _sambung_tautan(hasil, tautan).strip()
+
+
+def _sambung_tautan(teks: str, tautan: str) -> str:
+    """Tempelkan tautan di ujung entri, sekali saja dan tanpa miring."""
+    if not tautan:
+        return teks.strip()
+    return f"{teks.strip()} {tautan}".strip()
+
+
+def _bersihkan_tanda_humanizer(md: str) -> str:
+    """Buang sisa label laporan skill `humanizer` dari draf jawaban.
+
+    Pipeline menyuruh worker memakai skill itu dalam mode File, dan mode itu
+    memang menulis teks akhir saja ke berkas. Tapi kalau worker salah pilih
+    mode pasted, yang ikut tertulis adalah daftar polanya: blok `**Before:**`,
+    `Draft:`, `Remaining patterns`, dan pemisah `---` di sekitarnya. Label
+    seperti itu bukan cuma tidak rapi -- penilai langsung tahu teksnya lewat
+    alat, bukan ditulis mahasiswa.
+    """
+    if not md:
+        return md
+
+    label = re.compile(
+        r"^\s*(?:[-*>#]+\s*)?\**"
+        r"(?:before|after|draft|remaining patterns?|"
+        r"pola (?:yang )?tersisa|catatan (?:humanizer|skill))"
+        r"\**\s*(?:[-*:]\s*)?.*$",
+        re.IGNORECASE,
+    )
+
+    keluar: list[str] = []
+    for b in md.splitlines():
+        if label.match(b):
+            # Pemisah `---` tepat sebelum blok label ikut dibuang supaya
+            # tidak tertinggal garis sendiri di dokumen.
+            if keluar and keluar[-1].strip() in ("---", "***", "___"):
+                keluar.pop()
+            continue
+        keluar.append(b)
+
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(keluar))
+
+
 def _paragraf_referensi(doc: Document) -> list:
     """Paragraf entri Daftar Pustaka, dalam urutan dokumen.
 
@@ -1937,6 +2552,54 @@ def _convert_to_doc(docx_path: Path, doc_path: Path) -> bool:
     except Exception as exc:  # noqa: BLE001
         print(f"  ! Konversi ke .doc dilewati ({exc}). File .docx dipertahankan.")
         return False
+
+
+def rangkas_dokumen(docx_path: Path) -> list[str]:
+    """Beri tahu apa yang benar-benar keluar dari renderer.
+
+    Tanpa ini, tahap docx.py tidak terlihat di log sama sekali: pipeline
+    hanya mencetak baris "Dokumen: <path>", jadi ketika persamaan keluar
+    sebagai LaTeX mentah tidak ada yang bisa bilang itu terjadi di sini,
+    bukan di model. Baris-baris ini dibaca ulang dari berkas yang benar-benar
+    ditulis, jadi angkanya mencerminkan isi dokumen, bukan niat renderer.
+    """
+    try:
+        doc = Document(str(docx_path))
+    except Exception as exc:  # noqa: BLE001 - ringkasan tidak boleh gagal diam
+        return [f"dokumen tidak bisa dibaca ulang untuk ringkasan ({exc})"]
+
+    n_equation = len(doc.element.body.findall(f".//{{{_MATH_NS}}}oMath"))
+    # Equation yang masih membawa `\` berarti ada environment LaTeX yang
+    # tidak punya OMML-nya dan jatuh ke teks mentah.
+    n_mentah = sum(
+        1
+        for eq in doc.element.body.findall(f".//{{{_MATH_NS}}}oMath")
+        for t in eq.iter(f"{{{_MATH_NS}}}t")
+        if (t.text or "").count("\\") >= 2
+    )
+    n_kisi = len(doc.element.body.findall(f".//{{{_MATH_NS}}}m"))
+    n_rata = len(doc.element.body.findall(f".//{{{_MATH_NS}}}eqArr"))
+
+    referensi = _paragraf_referensi(doc)
+    n_miring = sum(
+        1 for p in referensi for r in p.runs if r.italic and (r.text or "").strip()
+    )
+    n_tebal = sum(
+        1 for p in referensi for r in p.runs if r.bold and (r.text or "").strip()
+    )
+
+    out = [
+        f"{len(doc.paragraphs)} paragraf, {n_equation} equation Word"
+        f" ({n_kisi} matriks, {n_rata} baris rata)",
+        f"{len(referensi)} entri Daftar Pustaka"
+        f" ({n_tebal} bagian tebal, {n_miring} bagian miring)",
+    ]
+    if n_mentah:
+        out.append(
+            f"! {n_mentah} equation masih memuat LaTeX mentah "
+            "(environment yang belum punya OMML)"
+        )
+    return out
 
 
 def save_doc(

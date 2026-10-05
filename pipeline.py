@@ -22,6 +22,7 @@ import importlib.util
 import json
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -84,6 +85,76 @@ _TOKEN_URL_RE = re.compile(r"([?&])k=[A-Za-z0-9_\-]+")
 def _saring_token(teks: str) -> str:
     """Ganti nilai `k=` pada URL Reader dengan penanda. Berlaku untuk log juga."""
     return _TOKEN_URL_RE.sub(r"\1***", teks)
+
+
+# Baris penutup laporan agent dan kalimat "tidak ada referensi". Keduanya
+# pernah ikut terbaca sebagai entri karena pipeline menerima semua baris
+# yang tidak kosong.
+_BUKAN_ENTRI_RE = re.compile(
+    r"^\s*(?:SELESAI|DRAFT|BEFORE|AFTER)\s*$|"
+    r"^\s*(?:[-*>#]+\s*)?\**\s*(?:before|after|draft|remaining patterns?)\b",
+    re.IGNORECASE,
+)
+
+_TAHUN_DALAM_ENTRI_RE = re.compile(r"\((?:n\.d\.|\d{4}[a-z]?)\)")
+
+# Tahun terbit bahan ajar. Dua sumber dibaca berurutan: pernyataan hak cipta
+# di dalam teks dulu (lebih kuat), lalu tahun yang ada di nama berkas
+# (Moodle menandai materi per tahun, mis. "2025-Materi Inisiasi..."). Kalau
+# keduanya kosong, hasilnya `n.d.` -- APA menyediakan bentuk itu justru untuk
+# kasus ini. Mengarang tahun berarti rujukan menunjuk terbitan yang tidak
+# pernah ada.
+_TAHUN_DALAM_NAMA_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_TAHUN_HAK_CIPTA_RE = re.compile(
+    r"(?i)(?:hak\s*cipta|copyright|\u00a9|edisi|edition)[^\d]{0,20}((?:19|20)\d{2})"
+)
+
+
+def _tahun_terbit(nama: str, teks: str) -> str:
+    """Tahun terbit yang bisa dipertanggungjawabkan, atau `n.d.`."""
+    m = _TAHUN_HAK_CIPTA_RE.search(teks or "")
+    if m:
+        return m.group(1)
+    m = _TAHUN_DALAM_NAMA_RE.search(nama or "")
+    if m:
+        return m.group(1)
+    return "n.d."
+
+
+def _kunci_referensi(baris: str) -> str:
+    """Kunci pembanding dan pengurut dua entri referensi.
+
+    Yang dibandingkan adalah penulis, tahun, dan beberapa kata pertama judul
+    dengan huruf kecil dan tanpa tanda baca. Dua entri yang bedanya hanya
+    miring, nomor halaman, atau URL yang berbeda-author-nya dianggap sama --
+    dan itu memang yang terjadi ketika pipeline menambahkan bahan ajar yang
+    sudah ditulis agent dengan bentuk sedikit berbeda.
+    """
+    teks = re.sub(r"\*+", "", baris or "").lower()
+    m = _TAHUN_DALAM_ENTRI_RE.search(teks)
+    if m:
+        penulis = teks[: m.start()]
+        sisa = teks[m.end():]
+    else:
+        penulis, sisa = "", teks
+    judul = re.sub(r"[^a-z0-9 ]+", " ", sisa).split()
+    return " ".join([*re.sub(r"[^a-z0-9 ]+", " ", penulis).split()[:4], *judul[:4]])
+
+
+def _sama_referensi(baris: str, kunci: str) -> bool:
+    """True kalau `baris` menunjuk rujukan yang sama dengan `kunci`."""
+    if not kunci:
+        return False
+    kunci_baris = _kunci_referensi(baris)
+    if kunci_baris == kunci:
+        return True
+    # Judul bahan ajar bisa saja ditulis agent dengan akhiran berbeda
+    # ("... (Materi Pokok)"), jadi bandingkan juga kata-kata yang sama.
+    kata_kunci = set(kunci.split())
+    kata_baris = set(kunci_baris.split())
+    if not kata_kunci or not kata_baris:
+        return False
+    return len(kata_kunci & kata_baris) >= max(3, int(len(kata_kunci) * 0.6))
 
 
 def _ringkas_singkat(nilai: object) -> str:
@@ -915,9 +986,17 @@ Jangan menempel isi jawaban mahasiswa lain ke peta mana pun.
         bisa diperiksa dan terbit dalam sepuluh tahun terakhir. Satu daftar
         harus memuat keduanya, dan hanya agent yang bisa mencari sumber
         kedua itu.
+
+        Bahan ajar sendiri tidak diandalkan pada hasil agent. Entri-nya
+        dibentuk pipeline dari lampiran resmi, karena dua hal bisa dan
+        memang terjadi: agent tidak menuliskan bahan ajar sama sekali,
+        atau menuliskannya dengan URL Reader beserta kunci akses yang masih
+        hidup.
         """
         tujuan = self.dirs["jawaban"] / f"referensi_sesi_{self.nomor}.md"
+
         if tujuan.is_file() and tujuan.stat().st_size > 40:
+            self._bersihkan_referensi(tujuan)
             self._log(f"  [6/8] Daftar pustaka sudah ada: {tujuan.name}")
             return tujuan
 
@@ -933,9 +1012,39 @@ Jangan menempel isi jawaban mahasiswa lain ke peta mana pun.
             self.hasil.gagal.append("Peta soal hilang sebelum dicari referensinya.")
             return None
 
+        # Recovery: agent kadang menulis berkasnya di path yang salah --
+        # misalnya `sesi-4_jawaban/` alih-alih `sesi-4/_jawaban/`. Isinya
+        # sudah benar dan layak dipakai, jadi lebih baik dipindah ke tempatnya
+        # daripada dibuang dan seluruh daftar pustaka diulang.
+        tersesat = self._cari_referensi_tersesat(tujuan)
+        if tersesat is not None:
+            tujuan.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(tersesat), str(tujuan))
+            # Folder sisa dibuang -- hanya folder kosong tempat berkas itu
+            # pernah berada. Isinya diperiksa satu per satu: folder kerja
+            # punya peta soal, transkrip, dan draf jawaban yang tidak boleh
+            # ikut terhapus bersama.
+            for sisa in self.dirs["matkul"].glob("sesi-*_jawaban"):
+                if not sisa.is_dir() or any(sisa.iterdir()):
+                    continue
+                sisa.rmdir()
+            self._log(
+                f"  [6/8] Daftar pustaka ditemukan di path keliru "
+                f"({tersesat.name}) lalu dipindahkan ke {tujuan.name}"
+            )
+            self._bersihkan_referensi(tujuan)
+            self.hasil.referensi = tujuan
+            return tujuan
+
         isi_peta = self.hasil.peta.read_text(encoding="utf-8", errors="replace")
-        bagian_bahan = _potong_bagian(isi_peta, "## Bahan ajar wajib sesi ini")
         soal_ringkas = _potong_soal_dari_peta(isi_peta)
+
+        # Entri bahan ajar dibentuk pipeline, bukan diterima dari agent. URL
+        # `h.url` adalah alamat pluginfile Moodle yang asli -- tanpa token --
+        # jadi aman dicetak ke dokumen yang diserahkan ke tutor.
+        entri_bahan = self._entri_bahan_ajar()
+        if entri_bahan:
+            self._log(f"        bahan ajar jadi entri #1: {entri_bahan[:70]}...")
 
         prompt = f"""Cari daftar pustaka untuk satu soal mata kuliah.
 
@@ -943,14 +1052,16 @@ Mata kuliah : {self.matkul.nama} ({self.matkul.kode or 'kode tidak disebut'})
 Sesi        : {self.nomor}
 
 Batas yang berlaku untukmu:
-- MAKSIMAL {config.MAX_REFERENSI} referensi.
+- MAKSIMAL {config.MAX_REFERENSI} referensi, TIDAK termasuk bahan ajar.
+  Pipeline sudah menyiapkan entri bahan ajar sendiri dan akan menambahkannya
+  di awal daftar.
 - Hanya terbitan {config.TAHUN_MIN} atau setelahnya.
 - Setiap entri harus punya URL atau DOI yang benar-benar bisa dibuka. Ambil
   halaman katalog atau repository untuk memastikan, jangan menuliskan URL
   dari ingatan.
 
 ## Bahan ajar wajib sesi ini
-{bagian_bahan or '(tidak ada di peta soal)'}
+{entri_bahan or '(tidak ada di peta soal)'}
 
 ## Ringkasan soal
 {soal_ringkas or '(tidak ada di peta soal)'}
@@ -958,6 +1069,10 @@ Batas yang berlaku untukmu:
 Tulis daftar APA 7 ke: {tujuan}
 Satu entri per baris, tanpa nomor, tanpa bullet, tanpa ISBN atau jumlah
 halaman yang tidak kamu lihat sendiri di katalog resmi.
+
+Jangan menuliskan URL `http://127.0.0.1:...` atau `localhost` di daftar ini.
+Alamat tersebut hanya hidup selama pipeline berjalan dan memuat kunci akses
+akun yang tidak boleh ikut terbawa ke berkas yang diserahkan ke tutor.
 """
         hasil = panggil_agent_bertahap(
             nama=config.AGENT_RESEARCH,
@@ -972,15 +1087,165 @@ halaman yang tidak kamu lihat sendiri di katalog resmi.
         )
 
         if not tujuan.is_file():
-            self.hasil.gagal.append(
-                "Daftar pustaka tidak terbentuk. Lihat _log/research.log."
-            )
-            self._log(f"        ! daftar pustaka gagal ({hasil.ringkas})")
-            return None
+            # Recovery kedua: mungkin agent tetap menulis ke path keliru
+            # meski sudah diberi tahu tempat yang benar.
+            tersesat = self._cari_referensi_tersesat(tujuan)
+            if tersesat is not None:
+                tujuan.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(tersesat), str(tujuan))
+                self._log(
+                    f"  [6/8] Daftar pustaka ditulis di path keliru "
+                    f"({tersesat.name}), sudah dipindahkan ke {tujuan.name}"
+                )
+            else:
+                self.hasil.gagal.append(
+                    "Daftar pustaka tidak terbentuk. Lihat _log/research.log."
+                )
+                self._log(f"        ! daftar pustaka gagal ({hasil.ringkas})")
+                return None
 
+        self._bersihkan_referensi(tujuan)
         self.hasil.referensi = tujuan
         self._log(f"  [6/8] Daftar pustaka: {tujuan.stat().st_size} byte")
         return tujuan
+
+    # ------------------------------------------------- 7a. bahan ajar & keamanan
+
+    def _cari_referensi_tersesat(self, tujuan: Path) -> Path | None:
+        """Cari `referensi_sesi_<n>.md` yang ditulis di luar folder jawaban.
+
+        Agent sering salah menggabungkan nama folder: `sesi-4_jawaban/`
+        muncul karena dua segmen path digabung dengan `_`, bukan karena
+        disengaja. Hasilnya berkas ada dan isinya benar, tapi pipeline
+        hanya melihat `sesi-4/_jawaban/` dan menyimpulkan daftar pustaka
+        gagal dibentuk.
+        """
+        if tujuan.is_file():
+            return None
+        nama = tujuan.name
+        # Cakupan dibatasi ke subfolder mata kuliah ini supaya berkas
+        # referensi milik mata kuliah lain tidak ikut terambil.
+        matkul_dir = self.dirs["matkul"]
+        kandidat: list[Path] = []
+        if matkul_dir.is_dir():
+            for induk in matkul_dir.iterdir():
+                if not induk.is_dir() or induk == self.dirs["root"]:
+                    continue
+                kandidat.extend(induk.glob(nama))
+                kandidat.extend((induk / "_jawaban").glob(nama))
+        yang_ada = [p for p in kandidat if p.is_file() and p.stat().st_size > 40]
+        if not yang_ada:
+            return None
+        # Yang paling baru ditulis kemungkinan besar milik sesi ini.
+        return max(yang_ada, key=lambda p: p.stat().st_mtime)
+
+    def _entri_bahan_ajar(self) -> str:
+        """Bentuk entri APA untuk bahan ajar wajib sesi ini.
+
+        Pipeline yang menyusunnya, bukan agent, karena dua alasan:
+
+        1. **Tidak boleh gagal jadi tidak ada.** Kalau bahan ajar ini tidak
+           masuk daftar, jawabannya jadi tanpa rujukan resmi -- persis
+           keluhan tutor.
+        2. **URL-nya harus benar.** `h.url` adalah alamat pluginfile Moodle
+           yang asli. Alamat Reader yang biasa dipakai agent memuat
+           `?u=...&k=<token>`, dan mencetak token itu di dokumen berarti
+           menempelkan kunci akses akun ke berkas yang diserahkan.
+
+        Tahun terbit tidak boleh dikarang. `_TAHUN_DALAM_ENTRI_RE` akan
+        memisahkan penulis dari sisa entri, jadi tahun memang wajib ada;
+        kalau tidak ditemukan di nama berkas maupun teks, dipakai `n.d.`
+        (tanpa tanggal), bukan angka tebakan.
+        """
+        for h in self.hasil.lampiran:
+            if h.gagal or not (h.nama or "").strip():
+                continue
+            judul = re.sub(r"^\s*#+\s*", "", h.nama).strip().rstrip(".")
+            judul = re.sub(r"\.(pdf|docx?|pptx?)$", "", judul, flags=re.I).strip()
+            # Tahun di depan nama berkas ("2025-Materi Inisiasi ...") sudah
+            # ditulis di kolom tahun; mengulangnya di judul bikin entri
+            # terbaca dua kali.
+            judul = re.sub(r"^(?:19|20)\d{2}\s*[-_–]\s*", "", judul).strip()
+            if not judul:
+                continue
+            tahun = _tahun_terbit(h.nama, h.teks)
+            return (
+                f"Universitas Terbuka. ({tahun}). *{judul}*. "
+                f"Universitas Terbuka. {h.url}"
+            )
+        return ""
+
+    def _bersihkan_referensi(self, berkas: Path) -> None:
+        """Bersihkan daftar pustaka hasil agent dan lengkapi bahan ajar.
+
+        Tiga hal dijamin di sini:
+
+        * **Entri bahan ajar selalu ada, tepat satu.** Kalau agent sudah
+          menuliskannya, entri versi pipeline menggantikannya -- isinya sama,
+          tapi URL-nya yang benar. Kalau tidak ada, entri pipeline
+          ditambahkan.
+        * **Tidak ada URL Reader dan kunci akses.** Daftar pustaka adalah
+          bagian dokumen yang paling sering dibaca tutor, jadi isinya harus
+          aman dibuka orang lain.
+        * **Tidak ada penanda urutan.** Daftar pustaka tidak bernomor; urutannya
+          alfabetis menurut penulis.
+        """
+        try:
+            isi = berkas.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+
+        # Markdown tautan dibuka lebih dulu, baru alamatnya dibuang. Urutan
+        # dibalik, `)` penutup tautan ikut terkikis bersama URL-nya dan
+        # kurung siku `[` dari markdown ikut tinggal sebagai teks.
+        isi = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", isi)
+        # Kunci akses dan alamat Reader dibuang. Sisa `?&` yang menggantung
+        # ikut dirapikan supaya tidak ada paragraf yang isinya cuma tanda baca.
+        isi = _TOKEN_URL_RE.sub("", isi)
+        isi = re.sub(
+            r"https?://(?:127\.0\.0\.1|localhost)(?::\d+)?[^\s,;)\]]*", "", isi
+        )
+        isi = re.sub(r"\[|\]", "", isi)
+
+        baris = [b.strip() for b in isi.splitlines()]
+        baris = [b for b in baris if b and not _BUKAN_ENTRI_RE.match(b)]
+        # Nomor urut dan bullet dibuang: penanda Daftar Pustaka adalah
+        # alfabetis, bukan angka.
+        baris = [re.sub(r"^(?:[-*+]|\[?\d+\]?[.)]?)\s+", "", b) for b in baris]
+        baris = [re.sub(r"\s{2,}", " ", b).strip(" ;,") for b in baris]
+        baris = [b for b in baris if b]
+
+        entri_bahan = self._entri_bahan_ajar()
+        if entri_bahan:
+            kunci_bahan = _kunci_referensi(entri_bahan)
+            # Entri agent yang menunjuk bahan ajar yang sama dilepas lebih
+            # dulu, supaya menggantinya tidak menghasilkan dua baris yang
+            # isinya hampir sama.
+            baris = [b for b in baris if not _sama_referensi(b, kunci_bahan)]
+            baris.insert(0, entri_bahan)
+
+        # Do-dobl dikurangi: entri yang identik pernah muncul dua kali ketika
+        # agent menulis daftar lalu pipeline menambahkannya lagi.
+        unik: list[str] = []
+        terlihat: set[str] = set()
+        for b in baris:
+            kunci = _kunci_referensi(b)
+            if kunci in terlihat:
+                continue
+            terlihat.add(kunci)
+            unik.append(b)
+        baris = sorted(unik, key=lambda b: _kunci_referensi(b))
+
+        if len(baris) < 2:
+            self.hasil.gagal.append(
+                f"Daftar pustaka hanya berisi {len(baris)} entri. "
+                "Tutor meminta bahan ajar wajib ditambah sumber internet terbaru."
+            )
+
+        try:
+            berkas.write_text("\n".join(baris) + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     # ------------------------------------------------------- 8. tulis jawaban
 
@@ -1062,6 +1327,9 @@ File: {peta}
 
 ## Daftar pustaka final (salin persis ke bagian Daftar Pustaka)
 File: {daftar_referensi if daftar_referensi else '(tidak ada; tulis entri yang benar-benar kamu verifikasi)'}
+Entri pertama menunjuk bahan ajar wajib sesi ini; sisanya sumber pelengkap
+dari internet. Jangan menambah, menghapus, atau menata ulang. Penulis tebal
+dan judul miring dikerjakan renderer dokumen -- tulis teks biasa saja.
 
 ## Transkrip lampiran
 Berkas `transkrip-soal-*.md` adalah hasil bacaan gambar soal resmi, jadi
@@ -1126,8 +1394,63 @@ Struktur jawaban yang diminta dokumen akhir:
                 "Jawaban tidak tertulis. Lihat _log/worker.log untuk penyebabnya."
             )
 
+        # Daftar pustaka dijahit di sini, bukan diserahkan ke worker. Prompt
+        # sudah menyuruhnya menyalin utuh, dan worker tetap pernah menulis
+        # "*Tidak ada referensi tambahan yang diperlukan.*" -- kalimat yang
+        # membuat seluruh Daftar Pustaka kosong di dokumen. Daftar pustaka
+        # ditentukan pipeline, bukan oleh model yang sedang menulis soal.
+        self._paksa_daftar_pustaka(tujuan, referensi)
+
         self.hasil.jawaban = tujuan
         self._log(f"  [7/8] Jawaban: {tujuan.stat().st_size} byte")
+
+    def _paksa_daftar_pustaka(self, jawaban: Path, referensi: Path | None) -> None:
+        """Ganti bagian `## Daftar Pustaka` dengan isi berkas referensi.
+
+        Menghapus apa pun yang ada di bawah heading itu, termasuk kalimat
+        "referensi tidak diperlukan" yang pernah keluar dari worker. Kalau
+        heading-nya tidak ada, bagiannya ditambahkan di akhir.
+        """
+        if referensi is None or not referensi.is_file():
+            # Tidak ada daftar pustaka berarti tahap 6 sudah gagal dan itu
+            # sudah dicatat di `self.hasil.gagal`. Mengarang di sini hanya
+            # menyembunyikan kegagalan itu.
+            return
+
+        try:
+            entri = [
+                b.strip()
+                for b in referensi.read_text(encoding="utf-8", errors="replace").splitlines()
+            ]
+        except OSError:
+            return
+        entri = [b for b in entri if b and not _BUKAN_ENTRI_RE.match(b)]
+        if not entri:
+            return
+
+        try:
+            teks = jawaban.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return
+
+        pola = re.compile(r"^#{1,6}\s*daftar\s+pustaka\s*$", re.I | re.M)
+        m = pola.search(teks)
+        if m:
+            kepala = teks[: m.start()].rstrip()
+            judul_bagian = m.group(0)
+            self._log(
+                f"        Daftar Pustaka diganti: {len(entri)} entri referensi, "
+                f"{len(teks[m.end():].strip().splitlines())} baris lama dibuang"
+            )
+        else:
+            kepala = teks.rstrip()
+            judul_bagian = "## Daftar Pustaka"
+            self._log(f"        Bagian `## Daftar Pustaka` ditambah: {len(entri)} entri")
+
+        # Satu entri per baris tanpa baris kosong di antaranya, sama seperti
+        # bentuk berkas yang dibaca worker lalu disalin ke jawaban.
+        bagian = "\n".join([judul_bagian, "", *entri]) + "\n"
+        jawaban.write_text((kepala + "\n\n" if kepala else "") + bagian, encoding="utf-8")
 
     # -------------------------------------------------------------- 9. docx
 
@@ -1207,6 +1530,13 @@ Struktur jawaban yang diminta dokumen akhir:
             )
         self._log(f"  [8/8] Dokumen: {docx_path}")
 
+        # Ringkasan dibaca ulang dari berkas yang benar-benar ditulis, bukan
+        # dari niat renderer. Tanpa ini tahap `tools/docx.py` tidak terlihat
+        # di log sama sekali, dan saat persamaan keluar sebagai LaTeX mentah
+        # tidak ada yang bisa bilang itu terjadi di sini, bukan di model.
+        for baris in docx_tool.rangkas_dokumen(docx_path):
+            self._log(f"        {baris}")
+
 
 # ---------------------------------------------------------------- pemdongsoal
 
@@ -1252,16 +1582,6 @@ def _bersihkan_markah_lokal(teks: str, akar_reader: str) -> str:
     teks = re.sub(r"[ \t]+\n", "\n", teks)
     teks = re.sub(r"\n{3,}", "\n\n", teks)
     return teks.strip()
-
-
-def _potong_bagian(isi: str, judul: str) -> str:
-    """Ambil satu bagian berheading dari peta soal."""
-    pola = re.compile(
-        r"^#{1,6}\s*" + re.escape(judul) + r"\s*$(.*?)(?=^#{1,6}\s|\Z)",
-        re.I | re.M | re.S,
-    )
-    m = pola.search(isi or "")
-    return m.group(1).strip() if m else ""
 
 
 def _potong_soal_dari_peta(isi: str, batas: int = 2500) -> str:
