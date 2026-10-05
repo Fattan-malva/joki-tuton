@@ -21,6 +21,9 @@ permissions:
   - action: read
     resource: "*"
     effect: allow
+  - action: bash
+    resource: "*"
+    effect: deny
 ---
 
 # Agent Research
@@ -134,6 +137,15 @@ panggilan: `https://api.openalex.org/works?search=propositional+logic&per-page=5
 
 ## Dilarang keras
 
+- Menjalankan shell, PowerShell, atau perintah apa pun. Kamu tidak punya izin
+  bash dan tidak membutuhkannya: tugasmu hanya webfetch dan menulis satu
+  berkas.
+- **Menghapus, memindahkan, atau menulis ulang berkas lain di folder kerja.**
+  Folder `_kerja/` milik pipeline: isinya peta soal, transkrip bahan ajar,
+  lampiran, dan draf jawaban dari tahap sebelumnya. Berkas yang boleh kamu
+  sentuh hanya berkas referensi yang disebut di prompt. Berkas lain yang
+  "mengganggu" harus dibiarkan utuh -- menghapus berkasnya membuat pipeline
+  gagal di tahap berikutnya.
 - Menulis ISBN, nomor halaman, tahun, penerbit, atau DOI yang tidak kamu lihat
   di respons webfetch.
 - Menerka penerbit dari negara penulis.

@@ -503,7 +503,7 @@ class Pipeline:
         self.tanpa_docx = tanpa_docx
 
         self.klien = moodle.Moodle()
-        self.dirs = config.work_dirs(matkul.slug)
+        self.dirs = config.work_dirs(matkul.slug, nomor_sesi)
         self.reader: reader_mod.Reader | None = None
         self.hasil = HasilSesi(matkul=matkul, sesi=Sesi(nomor_sesi, nomor_sesi))
 
@@ -562,11 +562,11 @@ class Pipeline:
             soal_teks, gambar_soal = self._kumpulkan_soal()
             self.hasil.gambar_soal = gambar_soal
             transkrip_soal = self._tahap_gambar_soal(gambar_soal)
-            peta = self._tahap_peta_sesi(transkrip_soal)
+            peta = self._tahap_peta_sesi(transkrip_soal, soal_teks)
             transkrip = transkrip_soal + self._tahap_bahan_ajar()
             self.hasil.transkrip = transkrip
             referensi = self._tahap_referensi()
-            self._tahap_jawaban(referensi)
+            self._tahap_jawaban(referensi, soal_teks)
             if not self.tanpa_docx:
                 self._tahap_docx(soal_teks)
         finally:
@@ -644,7 +644,9 @@ class Pipeline:
             )
         return transkrip
 
-    def _tahap_peta_sesi(self, transkrip_soal: list[Path]) -> Path | None:
+    def _tahap_peta_sesi(
+        self, transkrip_soal: list[Path], soal_teks: str = ""
+    ) -> Path | None:
         assert self.reader is not None
         tujuan = self.dirs["petak"] / f"sesi{self.nomor}.md"
         if tujuan.is_file():
@@ -663,6 +665,7 @@ class Pipeline:
         ) or "  - (tidak ada bahan ajar terdeteksi)"
 
         blok_gambar = _potong_soal_dari_gambar(transkrip_soal)
+        blok_soal = _potong_teks(soal_teks, config.BATAS_TEKS_SOAL)
 
         prompt = f"""Kamu adalah pemetaan soal untuk SATU sesi mata kuliah.
 
@@ -675,7 +678,15 @@ Batas eksplorasi untuk sesi ini: {config.BATAS_HALAMAN_SESI} halaman.
 
 Tulis peta soal ke: {tujuan}
 
-## Soal di sesi ini (buka semuanya)
+## Teks soal (sudah dibaca pipeline, inilah isinya)
+Pipeline ini sudah membuka setiap halaman soal di bawah dan mengubahnya jadi
+teks. Teks di bawah inilah rumusan soal yang resmi, jadi JANGAN buka URL soal
+untuk membaca soalnya -- membukanya hanya membuang anggaran eksplorasimu dan
+kadang justru mengembalikan halaman kosong.
+
+{blok_soal}
+
+## Soal di sesi ini (buka hanya untuk lampiran atau detail yang belum ada di teks)
 {urls_soal}
 
 ## Bahan ajar di sesi ini (buka semuanya)
@@ -683,7 +694,9 @@ Tulis peta soal ke: {tujuan}
 
 Semua URL di atas sudah berupa URL Reader lokal yang menyuntikkan sesi
 Moodle. Buka dengan webfetch apa adanya. Tautan di dalam halaman hasil
-webfetch juga sudah berupa URL Reader dan bisa diikuti langsung.
+webfetch juga sudah berupa URL Reader dan bisa diikuti langsung. Jangan
+menyalin ulang URL itu secara manual -- kalau perlu, salin utuh dari blok di
+atas, karena satu karakter base64 yang keliru membuat Reader menolaknya.
 
 {blok_gambar}
 Kerjakan sesuai spec-mu: tulis bagian `## Bahan ajar wajib sesi ini` dari teks
@@ -916,6 +929,10 @@ Jangan menempel isi jawaban mahasiswa lain ke peta mana pun.
             )
             return None
 
+        if not self.hasil.peta.is_file():
+            self.hasil.gagal.append("Peta soal hilang sebelum dicari referensinya.")
+            return None
+
         isi_peta = self.hasil.peta.read_text(encoding="utf-8", errors="replace")
         bagian_bahan = _potong_bagian(isi_peta, "## Bahan ajar wajib sesi ini")
         soal_ringkas = _potong_soal_dari_peta(isi_peta)
@@ -967,7 +984,9 @@ halaman yang tidak kamu lihat sendiri di katalog resmi.
 
     # ------------------------------------------------------- 8. tulis jawaban
 
-    def _tahap_jawaban(self, referensi: Path | None) -> None:
+    def _tahap_jawaban(
+        self, referensi: Path | None, soal_teks: str = ""
+    ) -> None:
         assert self.reader is not None
         tujuan = self.dirs["jawaban"] / "jawaban.md"
 
@@ -981,10 +1000,27 @@ halaman yang tidak kamu lihat sendiri di katalog resmi.
         daftar_referensi = referensi if referensi else None
 
         transkrip_teks = []
+        hilang: list[str] = []
         for t in self.hasil.transkrip:
+            # Daftar transkrip dibuat beberapa tahap lalu dibaca lagi di sini.
+            # Kalau salah satunya hilang di antara waktu itu -- misalnya karena
+            # proses lain membersihkan folder, atau ada yang menggeser berkasnya
+            # -- pipeline harus tetap jalan dan memberitahu, bukan berhenti dengan
+            # `FileNotFoundError` setelah semua agent lain selesai.
+            if not t.is_file():
+                hilang.append(t.name)
+                continue
             isi = t.read_text(encoding="utf-8", errors="replace")
             if len(isi.strip()) > 30:
                 transkrip_teks.append(f"### {t.name}\n{isi.strip()}")
+
+        if hilang:
+            self.hasil.gagal.append(
+                f"Transkrip hilang sebelum dipakai: {', '.join(hilang)}. "
+                "Jalankan ulang sesi ini bila bahan ajarnya memang dibutuhkan."
+            )
+            self._log(f"        ! {len(hilang)} transkrip hilang: {', '.join(hilang)}")
+
         blok_transkrip = "\n\n".join(transkrip_teks) or "(tidak ada transkrip gambar)"
 
         lampiran_teks = []
@@ -1006,11 +1042,20 @@ halaman yang tidak kamu lihat sendiri di katalog resmi.
             for a in self.hasil.sesi.soal
         ) or "  - (tidak ada)"
 
+        blok_soal = _potong_teks(soal_teks, config.BATAS_TEKS_SOAL)
+
         prompt = f"""Tulis jawaban tutorial online untuk satu sesi.
 
 Mata kuliah : {self.matkul.nama} ({self.matkul.kode or 'kode tidak disebut'})
 Kelas       : {self.matkul.kelas or 'tidak disebut'}
 Sesi        : {self.nomor}
+
+## Rumusan soal (sudah dibaca pipeline, inilah naskah resminya)
+Teks di bawah inilah soal yang harus kamu jawab. Penomoran, urutan butir, dan
+semua syarat format diambil dari sini. Jangan membukanya ulang lewat URL Reader
+kecuali ada bagian yang benar-benar tidak ada di teks ini.
+
+{blok_soal}
 
 ## Peta soal (WAJIB dibaca lengkap)
 File: {peta}
@@ -1138,7 +1183,7 @@ Struktur jawaban yang diminta dokumen akhir:
             kandidat = sorted(config.TEMPLATE_DIR.glob("*.docx"))
             template = kandidat[0] if kandidat else None
 
-        out = config.OUTPUT_DIR / meta["file_base"]
+        out = config.output_dir(self.matkul.slug, self.nomor)
         out.mkdir(parents=True, exist_ok=True)
         docx_path, _ = docx_tool.save_doc(
             jawaban_md=jawaban,
@@ -1226,6 +1271,25 @@ def _potong_soal_dari_peta(isi: str, batas: int = 2500) -> str:
     return bagian.strip()[:batas]
 
 
+def _potong_teks(teks: str, batas: int) -> str:
+    """Potong teks panjang dengan penanda yang jelas di bagian yang dibuang.
+
+    Pemotongan di tengah kalimat membuat agent mengira soalnya memang berhenti
+    di situ, lalu menyimpulkan soalnya tidak lengkap. Karena itu bagian yang
+    dibuang ditandai, bukan dipangkas diam-diam.
+    """
+    bersih = (teks or "").strip()
+    if not bersih:
+        return "(tidak ada teks soal; soal kemungkinan ada di dalam gambar)"
+    if len(bersih) <= batas:
+        return bersih
+    return (
+        bersih[:batas].rstrip()
+        + "\n\n[... teks soal dipotong oleh pipeline di sini karena terlalu "
+        "panjang. Buka URL soal kalau ada bagian yang benar-benar perlu ...]"
+    )
+
+
 def _potong_soal_dari_gambar(transkrip: list[Path], batas: int = 2500) -> str:
     """Blok transkripsi gambar soal untuk disisipkan ke prompt pemetaan.
 
@@ -1237,6 +1301,8 @@ def _potong_soal_dari_gambar(transkrip: list[Path], batas: int = 2500) -> str:
         return ""
     potongan: list[str] = []
     for t in transkrip:
+        if not t.is_file():
+            continue
         isi = t.read_text(encoding="utf-8", errors="replace").strip()
         if len(isi) > 20:
             potongan.append(isi[:batas])

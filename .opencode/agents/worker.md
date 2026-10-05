@@ -9,6 +9,9 @@ permissions:
   - action: read
     resource: "*"
     effect: allow
+  - action: bash
+    resource: "*"
+    effect: deny
   - action: edit
     resource: "*"
     effect: allow
@@ -89,7 +92,11 @@ diikuti langsung.
 - Kalau peta menandai soal yang bergantung lampiran, buka lampiran itu dulu.
   Jangan menjawab dari asumsi.
 - DILARANG menjalankan bash/PowerShell/script apa pun (tidak punya izin bash),
-  termasuk OCR, crop, resize, atau render ASCII.
+  termasuk OCR, crop, resize, atau render ASCII. Jangan menghapus, memindahkan,
+  atau menulis ulang berkas lain di `_kerja/`: peta soal, transkrip, daftar
+  pustaka, dan lampiran milik pipeline dan dibutuhkan tahap berikutnya. Satu-
+ -satunya berkas yang boleh kamu tulis adalah berkas jawaban yang
+  disebutkan di prompt.
 - Boleh memakai tool `read` pada berkas lampiran yang disebutkan di prompt,
   tetapi hanya bila isinya memang dibutuhkan dan modelmu bisa melihat
   gambar/PDF. Jangan pernah mengarang isi lampiran; kalau tidak terbaca,

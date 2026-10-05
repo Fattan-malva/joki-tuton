@@ -27,22 +27,44 @@ CACHE_DIR = BASE_DIR / "cache"
 KERJA_DIR = BASE_DIR / "_kerja"
 
 
-def work_dirs(slug: str) -> dict[str, Path]:
-    """Folder kerja untuk satu mata kuliah.
+def work_dirs(slug: str, nomor: int | None = None) -> dict[str, Path]:
+    """Folder kerja untuk satu mata kuliah, atau satu sesi mata kuliah.
 
-    Dipisah per mata kuliah karena isinya tidak boleh bercampur: peta soal
-    sesi 2 mata kuliah A bukan peta soal sesi 2 mata kuliah B, dan `_petak/sesi2.md`
-    yang sama untuk keduanya akan saling menimpa.
+    Dua tingkat pemisahan, keduanya perlu:
+
+    - **Per mata kuliah.** Peta soal sesi 2 mata kuliah A bukan peta soal sesi 2
+      mata kuliah B. Tanpa pemisahan ini keduanya menulis ke
+      `_petak/sesi2.md` yang sama dan saling menimpa.
+    - **Per sesi.** Kalau satu sesi dijalankan ulang dengan versi agent yang
+      lebih baru, seluruh isi sesi lama (peta, transkrip, draf jawaban, log)
+      akan hilang dan tidak bisa dibandingkan dengan hasil baru. Folder
+      keluaran juga sudah dipanggil per sesi, dan lampiran yang belum selesai
+      diunduh tidak ikut terpotong oleh sesi berikutnya.
+
+    `nomor` boleh `None` untuk pemanggilan yang hanya butuh folder induk,
+    misalnya saat membersihkan cache.
     """
     root = KERJA_DIR / slug
+    if nomor is not None:
+        root = root / f"sesi-{nomor}"
     return {
         "root": root,
+        "matkul": KERJA_DIR / slug,
         "petak": root / "_petak",
         "berkas": root / "_berkas",
         "bahan": root / "_bahan",
         "jawaban": root / "_jawaban",
         "log": root / "_log",
     }
+
+
+def output_dir(slug: str, nomor: int) -> Path:
+    """Folder keluaran untuk satu sesi: `output/<matkul>/sesi-<N>/`.
+
+    Berkas di dalamnya tetap bernama `<matkul>-sesi-<N>.docx` karena nama berkas
+    itulah yang dibaca tutor saat mengumpulkan jawaban.
+    """
+    return OUTPUT_DIR / slug / f"sesi-{nomor}"
 
 
 # ---------------------------------------------------------------- pemuatan .env
@@ -137,6 +159,12 @@ TAHUN_MIN = date.today().year - 10  # "10 tahun terakhir"
 # satu sesi nyata bisa punya 1 forum + 1 tugas + beberapa lampiran + 1 halaman
 # bahan ajar, dan 12 kadang habis sebelum semuanya sempat dibuka.
 BATAS_HALAMAN_SESI = 18
+
+# Berapa karakter teks soal yang disisipkan ke prompt pemetaan dan prompt
+# penulis. Pipeline sudah membuka halaman soal sendiri, jadi teksnya dikirim
+# apa adanya; batas ini hanya menjaga agar post forum yang panjang tidak
+# menelan seluruh jendela konteks agent.
+BATAS_TEKS_SOAL = 6000
 
 # Berapa berkas montage yang boleh dikirim ke model penglihatan untuk satu
 # lampiran. Setiap montage adalah satu panggilan `opencode run` dengan model

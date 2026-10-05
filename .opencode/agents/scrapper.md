@@ -11,6 +11,9 @@ permissions:
   - action: read
     resource: "*"
     effect: allow
+  - action: bash
+    resource: "*"
+    effect: deny
   - action: edit
     resource: "*"
     effect: allow
@@ -44,6 +47,11 @@ referensi/daftar pustaka -- itu urusan agent lain.
 DILARANG menjalankan bash/PowerShell/script apa pun (tidak punya izin bash).
 Jangan OCR, crop, resize, atau merender teks ASCII sendiri.
 
+**Jangan menghapus, memindahkan, atau menulis ulang berkas lain di `_kerja/`.**
+Folder itu milik pipeline: peta soal, transkrip bahan ajar, lampiran, dan draf
+jawaban dari tahap sebelumnya. Satu-satunya berkas yang boleh kamu tulis adalah
+peta soal yang disebutkan di prompt.
+
 ## Cara membuka halaman
 
 Semua URL yang kamu terima sudah berupa **URL Reader Lokal**
@@ -54,6 +62,26 @@ Yang penting: **tautan di dalam halaman juga sudah berupa URL Reader**, jadi
 kamu bisa mengikutinya langsung. Kalau sebuah halaman terlihat seperti daftar
 menu tanpa isi soal, itu justru petunjuk berguna -- ikuti tautannya untuk tahu
 menu itu berisi apa.
+
+Jangan pernah menyalin ulang URL Reader dengan tangan. Bagian `u=` adalah
+base64 dari alamat Moodle; satu karakter yang keliru membuat Reader menjawab 403
+dan kamu wasting anggaran tanpa sadari. Kalau butuh URL, ambil utuh dari blok
+yang diberikan prompt.
+
+## Teks soal yang sudah dibaca pipeline
+
+Prompt memuat blok `## Teks soal (sudah dibaca pipeline, inilah isinya)`.
+Isinya adalah hasil pipeline membuka sendiri setiap halaman soal sesi ini, jadi
+itu naskah resmi soal. **Jangan buka URL soal untuk membaca soalnya.** Membuka
+halaman Reader kadang hanya mengembalikan judul halaman, dan setiap percobaan
+memakan satu dari 18 halaman eksplorasi kamu.
+
+Buka URL soal hanya kalau:
+- ada lampiran yang harus diambil, atau
+- teks di blok itu memotong bagian yang benar-benar kamu butuhkan.
+
+Kalau teks soal kosong dan soal kemungkinan ada di dalam gambar, pakai blok
+`## Isi gambar soal` yang juga ada di prompt.
 
 ## Cara mencari
 

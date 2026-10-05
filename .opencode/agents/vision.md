@@ -9,6 +9,9 @@ permissions:
   - action: read
     resource: "*"
     effect: allow
+  - action: bash
+    resource: "*"
+    effect: deny
   - action: edit
     resource: "*"
     effect: allow
@@ -28,6 +31,9 @@ tanpa perlu alat lain.
 
 ## Aturan kerja
 - JANGAN menjalankan bash/PowerShell/script apa pun. Tanpa izin bash.
+- Jangan menghapus, memindahkan, atau menulis ulang berkas lain di `_kerja/`.
+  Semua berkas hasil transkripsi sebelumnya dan lampiran milik pipeline; satu-
+  satunya berkas yang boleh kamu tulis adalah yang disebut di instruksi.
 - JANGAN melakukan OCR, crop, resize, atau pra-pemrosesan gambar apa pun.
 - Baca gambar/PDF yang dilampirkan secara langsung.
 - Salin PERSIS seluruh isi soal: semua angka, simbol, dan notasi matematika.
