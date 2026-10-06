@@ -321,19 +321,31 @@ def _baca_pdf(
         halaman_n = dokumen.page_count
         potongan: list[str] = []
         for i in range(halaman_n):
-            teks = dokumen[i].get_text().strip()
+            try:
+                teks = dokumen[i].get_text().strip()
+            except Exception as exc:  # noqa: BLE001
+                catatan.append(f"Halaman {i + 1} gagal dibaca teksnya: {exc}")
+                continue
             if teks:
                 potongan.append(f"### Halaman {i + 1}\n{teks}")
         teks_penuh = "\n\n".join(potongan)
 
         # Rasio teks terhadap gambar menentukan apakah model penglihatan
-        # perlu turun tangan.
-        gambar_total = sum(
-            len(dokumen[i].get_images(full=True)) for i in range(halaman_n)
-        )
+        # perlu turun tangan. Dihitung hanya di halaman yang akan dirender
+        # supaya halaman panjang tidak membuat `get_images` menguras waktu,
+        # dan dibungkus try: PDF ekspor yang layer-nya invalid membuat
+        # pemanggilan ini memodat atau melempar error.
+        konteks = min(halaman_n, BATAS_HALAMAN_GAMBAR)
+        gambar_total = 0
+        for i in range(konteks):
+            try:
+                gambar_total += len(dokumen[i].get_images(full=True))
+            except Exception as exc:  # noqa: BLE001
+                catatan.append(f"Halaman {i + 1} gagal diperiksa gambarnya: {exc}")
+                continue
         if not teks_penuh:
             catatan.append("PDF tidak memuat teks sama sekali; isinya ada di gambar.")
-        elif gambar_total > halaman_n and len(teks_penuh) < 20000:
+        elif gambar_total > konteks and len(teks_penuh) < 20000:
             catatan.append(
                 "PDF ini hasil ekspor slide: teksnya sedikit dan isinya "
                 "sebagian besar berupa gambar. Halaman sudah dirender, "
