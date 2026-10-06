@@ -609,6 +609,19 @@ class Pipeline:
 
         self._log(f"\n=== {self.matkul.label} - Sesi {self.nomor} ===")
 
+        # 0. Sesi yang sudah terselesaikan dengan benar tidak dikerjakan ulang.
+        #    Sebelumnya setiap tahap hanya mengelola artefaknya sendiri (peta
+        #    direuse, referensi direuse), tapi `_tahap_jawaban` dan
+        #    `_tahap_docx` selalu menjalankan agent lagi -- artinya biaya
+        #    penuh untuk dokumen yang sudah ada. Untuk memaksa pekerjaan
+        #    ulang, hapus jawaban.md atau berkas .docx-nya.
+        if self._sudah_selesai():
+            self._log(
+                f"  [skip] sesi sudah selesai "
+                f"({self.hasil.docx or self.hasil.jawaban}) -- dilewati"
+            )
+            return self.hasil
+
         # 1. Cek login lebih dulu. Kegagalan di sini paling sering cookie
         #    kedaluwarsa, dan pesan error Moodle untuk kasus itu menyesatkan.
         masuk, pesan = self.klien.cek_login()
@@ -644,6 +657,25 @@ class Pipeline:
             self.reader.berhenti()
 
         return self.hasil
+
+    def _sudah_selesai(self) -> bool:
+        """True kalau jawaban dan dokumen sesi ini sudah ada dan punya cukup isi.
+
+        Dokumen dianggap "selesai dengan benar" ketika keduanya ada --
+        jawaban.md berisi, dan .docx untuk sesi itu sudah ditulis. Kalau
+        salah satu hilang atau kosong, sesi dikerjakan ulang dari tahap yang
+        sesuai.
+        """
+        jawaban = self.dirs["jawaban"] / "jawaban.md"
+        docx = (
+            config.output_dir(self.matkul.slug, self.nomor)
+            / f"{self.matkul.slug}-sesi-{self.nomor}.docx"
+        )
+        selesai = jawaban.is_file() and jawaban.stat().st_size > 500 and docx.is_file() and docx.stat().st_size > 4096
+        if selesai:
+            self.hasil.jawaban = jawaban
+            self.hasil.docx = docx
+        return selesai
 
     # ------------------------------------------------------ 4. kumpulkan soal
 
@@ -683,6 +715,29 @@ class Pipeline:
             gambar.extend(found)
             if found:
                 self._log(f"        {a.nama}: {len(found)} gambar soal diambil")
+
+        # Beberapa course menaruh gambar soal langsung di halaman section
+        # (`view.php?id=...&section=N`), bukan di posting forum. Kalau kedua
+        # loop di atas tidak menemukan satu pun, buka section page sebagai
+        # cadangan. Tanpa cadangan ini, course seperti Model Linear Terapan
+        # mengeluarkan peta kosong karena agent terus mencarinya di forum.
+        if not gambar:
+            url_section = (
+                f"{self.klien.base_url}/course/view.php"
+                f"?id={self.matkul.id}&section={self.nomor}"
+            )
+            try:
+                ditemukan = attachments.kumpulkan_gambar_soal(
+                    self.klien, url_section, self.dirs["berkas"] / "soal"
+                )
+            except Exception:  # noqa: BLE001
+                ditemukan = []
+            if ditemukan:
+                gambar.extend(ditemukan)
+                self._log(
+                    f"        Halaman section: {len(ditemukan)} gambar soal "
+                    "diambil (soal tidak ada di halaman posting forum)"
+                )
 
         return "\n\n---\n\n".join(b for b in bagian if b.strip()), gambar
 
@@ -759,6 +814,14 @@ kadang justru mengembalikan halaman kosong.
 
 ## Soal di sesi ini (buka hanya untuk lampiran atau detail yang belum ada di teks)
 {urls_soal}
+
+Kalau posting forum-nya tidak memuat teks soal -- yang terjadi kalau dosen
+menyimpan soal sebagai gambar -- cari di halaman section berikut:
+
+    {self.klien.base_url}/course/view.php?id={self.matkul.id}&section={self.nomor}
+
+Halaman itu sering memuat gambar soal utama, bukan halaman forum. Jangan
+bilang "soal tidak ditemukan" sebelum membuka halaman section ini.
 
 ## Bahan ajar di sesi ini (buka semuanya)
 {urls_materi}
