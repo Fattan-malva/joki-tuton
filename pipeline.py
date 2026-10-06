@@ -833,6 +833,13 @@ menyalin ulang URL itu secara manual -- kalau perlu, salin utuh dari blok di
 atas, karena satu karakter base64 yang keliru membuat Reader menolaknya.
 
 {blok_gambar}
+**Kalau blok di atas mengatakan "SUDAH DIBACA model penglihatan", maka isi
+soalnya sudah ada. JANGAN mencari soal lagi: tidak perlu membuka URL soal,
+halaman forum, halaman section, atau melakukan webfetch berulang hanya untuk
+memastikan -- transkrip itu adalah soal resmi. Waktu penelusuranmu dibatasi,
+dan mencari ulang menulis peta hanya membuang sedikit anggaran eksplorasi
+untuk dua tugas ini.**
+
 Kerjakan sesuai spec-mu: tulis bagian `## Bahan ajar wajib sesi ini` dari teks
 halaman sesi, lalu tiap soal beserta format jawaban, rubrik, dan lampirannya.
 Jangan menempel isi jawaban mahasiswa lain ke peta mana pun.
@@ -874,6 +881,14 @@ Jangan menempel isi jawaban mahasiswa lain ke peta mana pun.
             for a in self.hasil.sesi.materi
             if a.modtype == "resource" and a.url
         ]
+        # Lampiran soal yang menempel pada posting forum. Forum Diskusi UT
+        # sering menyimpan soal sebagai lampiran, bukan sebagai resource di
+        # halaman section, jadi tidak terlihat dari `sesi.materi`.
+        for a in self.hasil.sesi.soal:
+            if a.modtype == "forum" and a.url:
+                pasangan.extend(
+                    attachments.cari_lampiran_forum(self.klien, a.url)
+                )
         if not pasangan:
             self._log("  [5/8] Tidak ada lampiran bahan ajar untuk diunduh")
             return []
@@ -1220,23 +1235,34 @@ akun yang tidak boleh ikut terbawa ke berkas yang diserahkan ke tutor.
         kalau tidak ditemukan di nama berkas maupun teks, dipakai `n.d.`
         (tanpa tanggal), bukan angka tebakan.
         """
-        for h in self.hasil.lampiran:
-            if h.gagal or not (h.nama or "").strip():
-                continue
-            judul = re.sub(r"^\s*#+\s*", "", h.nama).strip().rstrip(".")
-            judul = re.sub(r"\.(pdf|docx?|pptx?)$", "", judul, flags=re.I).strip()
-            # Tahun di depan nama berkas ("2025-Materi Inisiasi ...") sudah
-            # ditulis di kolom tahun; mengulangnya di judul bikin entri
-            # terbaca dua kali.
-            judul = re.sub(r"^(?:19|20)\d{2}\s*[-_–]\s*", "", judul).strip()
-            if not judul:
-                continue
-            tahun = _tahun_terbit(h.nama, h.teks)
-            return (
-                f"Universitas Terbuka. ({tahun}). *{judul}*. "
-                f"Universitas Terbuka. {h.url}"
-            )
-        return ""
+        kandidat = [
+            h for h in self.hasil.lampiran
+            if not h.gagal and (h.nama or "").strip()
+        ]
+        if not kandidat:
+            return ""
+        # Lampiran soal (PDF "Diskusi ... - ...") ditemukan bersama
+        # lampiran materi, tapi daftar pustaka butuh bahan ajar, bukan soal.
+        # Pilih pertama yang namanya seperti materi; kalau tidak ada, pakai
+        # yang pertama.
+        pilihan = next(
+            (h for h in kandidat if "materi" in h.nama.lower()),
+            kandidat[0],
+        )
+        h = pilihan
+        judul = re.sub(r"^\s*#+\s*", "", h.nama).strip().rstrip(".")
+        judul = re.sub(r"\.(pdf|docx?|pptx?)$", "", judul, flags=re.I).strip()
+        # Tahun di depan nama berkas ("2025-Materi Inisiasi ...") sudah
+        # ditulis di kolom tahun; mengulangnya di judul bikin entri
+        # terbaca dua kali.
+        judul = re.sub(r"^(?:19|20)\d{2}\s*[-_–]\s*", "", judul).strip()
+        if not judul:
+            return ""
+        tahun = _tahun_terbit(h.nama, h.teks)
+        return (
+            f"Universitas Terbuka. ({tahun}). *{judul}*. "
+            f"Universitas Terbuka. {h.url}"
+        )
 
     def _bersihkan_referensi(self, berkas: Path) -> None:
         """Bersihkan daftar pustaka hasil agent dan lengkapi bahan ajar.

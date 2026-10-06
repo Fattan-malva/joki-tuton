@@ -410,6 +410,30 @@ def kumpulkan_gambar_soal(
         src = (tag.get("src") or tag.get("data-src") or "").strip()
         if not src or POLA_GAMBAR_BUKAN_SOAL.search(src):
             continue
+
+        # URL inline base64 (`data:image/png;base64,...`) muncul kalau
+        # dosen menempel gambar langsung di deskripsi section tanpa upload
+        # file terpisah. Pola `endswith((...))` di bawah akan menolaknya
+        # karena stringnya tidak punya ekstensi, jadi ditangani khusus di sini.
+        if src.startswith("data:image/"):
+            import base64 as _b64
+
+            try:
+                header, koma, data = src.partition(",")
+                mime = header.split(";")[0].split(":", 1)[1].lower()
+                ekst = {"image/png": ".png", "image/jpeg": ".jpg",
+                        "image/gif": ".gif", "image/webp": ".webp"}.get(mime)
+                if ekst is None or not data:
+                    continue
+                nama = f"{config.slugify(Path(folder).name, 'soal')}-{i:02d}{ekst}"
+                tujuan = folder / nama
+                tujuan.write_bytes(_b64.b64decode(data, validate=False))
+            except Exception:  # noqa: BLE001
+                continue
+            if tujuan.is_file() and tujuan.stat().st_size > 1024:
+                keluar.append(tujuan)
+            continue
+
         penuh = klien.absolut(src)
         if not penuh.lower().split("?")[0].endswith((".png", ".jpg", ".jpeg", ".gif")):
             continue
@@ -519,6 +543,32 @@ def pilih_halaman_gambar(
     # Halaman awal selalu dipertahankan.
     dipilih.update(range(min(3, n)))
     return sorted(dipilih)
+
+
+def cari_lampiran_forum(klien: moodle.Moodle, url: str) -> list[tuple[str, str]]:
+    """Ekstrak tautan lampiran forum dari halaman posting Diskusi.
+
+    Forum Diskusi Universitas Terbuka sering menyimpan soal -- misalnya
+    `Diskusi 4 - Model Linear Terapan.pdf` -- sebagai lampiran pada post
+    pertama, bukan sebagai resource di halaman section. Oleh karena itu
+    `_kumpulkan_gambar_soal` (yang hanya mencari <img>) tidak menemukannya,
+    dan `kumpulkan_lampiran` (yang hanya diberi URL aktivitas tipe resource)
+    tidak akan pernah melihatnya. Lampiran seperti ini harus ditemukan
+    secara eksplisit.
+    """
+    try:
+        halaman = klien.ambil(url)
+    except moodle.MoodleError:
+        return []
+    hasil: list[tuple[str, str]] = []
+    for m in re.finditer(
+        r'href="([^"]*pluginfile\.php/[^"]*/mod_forum/attachment/[^"]+)"',
+        halaman.html,
+    ):
+        url_abs = klien.absolut(m.group(1))
+        nama = Path(unquote(urlparse(url_abs).path)).name
+        hasil.append((url_abs, nama))
+    return hasil
 
 
 def kumpulkan_lampiran(
