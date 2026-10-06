@@ -37,19 +37,14 @@ hanging indent).
    Kalau tidak dikenali, tambahkan folder global npm ke `PATH`
    (biasanya `%APPDATA%\npm`).
 
-3. Susun `~/.config/opencode/opencode.json` minimal:
+3. Untuk menghemat cost models vision saya sarankan untuk pakai provider dari ollama cloud
 
    ```json
-   {
-     "provider": {
-       "opencode": {
-         "models": {
-           "zhipu/glm-4.6": {},
-           "openai/gpt-5-mini": {}
-         }
-       }
-     }
-   }
+    #jalankan command di chat opencode CLI
+
+    /connect
+
+    #pilih provider Ollama Cloud dan masukkan API KEY nya 
    ```
 
    Pipeline memakai model utama untuk pemetaan/penjawaban/riset, dan model
@@ -76,7 +71,8 @@ UT_PRODI=...
 ```
 
 Cookie didapat dari browser (DevTools → Application → Cookies untuk
-`elearning.ut.ac.id`) setelah Anda login manual. Pipeline tidak meminta
+`elearning.ut.ac.id`) setelah Anda login manual.Ambil Value Cookie dari "MoodleSession"
+Pipeline tidak meminta
 password.
 
 ## Menjalankan
