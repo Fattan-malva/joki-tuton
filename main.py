@@ -97,8 +97,17 @@ def _sesi_per_mata_kuliah(
     hasil: dict[str, set[int]] = {}
     for mk in daftar:
         try:
+            # `daftar_section` hanya memberi tahu section mana yang ada.
+            # Sebuah section bisa ada tapi kosong -- tidak ada soal sama
+            # sekali, hanya pengumuman atau halaman kosong. Kalau itu
+            # dianggap "punya sesi", pipeline penuh akan dijalankan cuma
+            # untuk menemukan bahwa soalnya tidak ada, dan itu biaya agent
+            # yang terbuang. Hanya section dengan minimal satu soal yang
+            # dihitung.
             hasil[mk.id] = {
-                s for s in courses.daftar_section(klien, mk) if s > 0
+                s
+                for s, n in courses.sesi_berisi_soal(klien, mk)
+                if n > 0
             }
         except moodle.MoodleError as exc:
             print(f"  ! Gagal membaca section {mk.nama}: {exc}")
